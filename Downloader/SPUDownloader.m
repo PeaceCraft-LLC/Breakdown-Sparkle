@@ -41,6 +41,7 @@ static NSString *SUDownloadingReason = @"Downloading update related file";
     
     BOOL _disabledAutomaticTermination;
     BOOL _receivedExpectedBytes;
+    BOOL _retriedPersistentDownload;
 }
 
 - (instancetype)initWithDelegate:(id <SPUDownloaderDelegate>)delegate
@@ -112,6 +113,8 @@ static NSString *SUDownloadingReason = @"Downloading update related file";
             self->_disabledAutomaticTermination = YES;
             
             self->_mode = SPUDownloadModePersistent;
+            self->_receivedExpectedBytes = NO;
+            self->_retriedPersistentDownload = NO;
             self->_desiredFilename = desiredFilename;
             self->_bundleIdentifier = [bundleIdentifier copy];
             
@@ -312,7 +315,7 @@ static bool SPUValidateStatusCodeAndFailIfInvalid(NSURLResponse * _Nullable resp
         return;
     }
     
-    if (totalBytesExpectedToWrite > 0 && !_receivedExpectedBytes) {
+    if (!_receivedExpectedBytes && (totalBytesExpectedToWrite > 0 || _retriedPersistentDownload)) {
         _receivedExpectedBytes = YES;
         [_delegate downloaderDidReceiveExpectedContentLength:totalBytesExpectedToWrite];
     }
@@ -322,8 +325,29 @@ static bool SPUValidateStatusCodeAndFailIfInvalid(NSURLResponse * _Nullable resp
     }
 }
 
-- (void)URLSession:(NSURLSession *)__unused session task:(NSURLSessionTask *)__unused task didCompleteWithError:(NSError *)error
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error
 {
+    if (task != _sessionTask) {
+        return;
+    }
+
+    NSURLRequest *request = task.originalRequest;
+    if (_mode == SPUDownloadModePersistent && !_retriedPersistentDownload && request != nil &&
+        [error.domain isEqualToString:NSURLErrorDomain] &&
+        (error.code == NSURLErrorNetworkConnectionLost || error.code == NSURLErrorTimedOut)) {
+        _retriedPersistentDownload = YES;
+        _receivedExpectedBytes = NO;
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            // Cleanup clears the task when the update is cancelled during the delay.
+            if (self->_sessionTask == task) {
+                self->_sessionTask = [session downloadTaskWithRequest:request];
+                [self->_sessionTask resume];
+            }
+        });
+        return;
+    }
+
     _sessionTask = nil;
     if (error != nil) {
         [_delegate downloaderDidFailWithError:error];
