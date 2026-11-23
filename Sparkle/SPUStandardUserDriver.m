@@ -807,6 +807,7 @@
 {
     assert(NSThread.isMainThread);
     
+    _bytesDownloaded = 0;
     _expectedContentLength = expectedContentLength;
     if (expectedContentLength == 0) {
         [_statusController setMaxProgressValue:0.0];
